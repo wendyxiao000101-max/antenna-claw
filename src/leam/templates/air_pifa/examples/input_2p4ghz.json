@@ -1,0 +1,5 @@
+{
+  "description": "设计一个 2.4GHz 空气介质 PIFA 天线",
+  "target_frequency_ghz": 2.4,
+  "output_name": "air_pifa_2p4g"
+}

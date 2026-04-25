@@ -1,0 +1,117 @@
+{
+  "unit": "mm",
+  "parameters": {
+    "t_cu": 0.035,
+    "Lg": 60.0,
+    "Wg": 40.0,
+    "h": 6.0,
+    "Lp": 18.142361,
+    "Wp": 12.4,
+    "dPin": 1.0,
+    "sPins": 1.34,
+    "gPort": 0.2
+  },
+  "solids": [
+    {
+      "name": "GroundPlane",
+      "shape": "Brick",
+      "material": "Copper (annealed)",
+      "dimensions": {
+        "Xmin": "-Lg/2",
+        "Xmax": "Lg/2",
+        "Ymin": "-Wg/2",
+        "Ymax": "Wg/2",
+        "Zmin": "0",
+        "Zmax": "t_cu"
+      }
+    },
+    {
+      "name": "RadiatingPatch",
+      "shape": "Brick",
+      "material": "Copper (annealed)",
+      "dimensions": {
+        "Xmin": "-Lp/2",
+        "Xmax": "Lp/2",
+        "Ymin": "-Wp/2",
+        "Ymax": "Wp/2",
+        "Zmin": "t_cu+h",
+        "Zmax": "t_cu+h+t_cu"
+      }
+    },
+    {
+      "name": "ShortingPin",
+      "shape": "Cylinder",
+      "material": "Copper (annealed)",
+      "dimensions": {
+        "OuterRadius": "dPin/2",
+        "Axis": "z",
+        "Zmin": "0",
+        "Zmax": "t_cu+h+t_cu",
+        "Xcenter": "-Lp/2 + dPin/2",
+        "Ycenter": "0"
+      }
+    },
+    {
+      "name": "FeedPin_Bottom",
+      "shape": "Cylinder",
+      "material": "Copper (annealed)",
+      "dimensions": {
+        "OuterRadius": "dPin/2",
+        "Axis": "z",
+        "Zmin": "0",
+        "Zmax": "t_cu+h-gPort",
+        "Xcenter": "-Lp/2 + dPin/2",
+        "Ycenter": "sPins"
+      }
+    },
+    {
+      "name": "FeedPin_Top",
+      "shape": "Cylinder",
+      "material": "Copper (annealed)",
+      "dimensions": {
+        "OuterRadius": "dPin/2",
+        "Axis": "z",
+        "Zmin": "t_cu+h",
+        "Zmax": "t_cu+h+t_cu",
+        "Xcenter": "-Lp/2 + dPin/2",
+        "Ycenter": "sPins"
+      }
+    },
+    {
+      "name": "FeedPort_Gap",
+      "shape": "Cylinder",
+      "material": "Vacuum",
+      "dimensions": {
+        "OuterRadius": "dPin/2",
+        "Axis": "z",
+        "Zmin": "t_cu+h-gPort",
+        "Zmax": "t_cu+h",
+        "Xcenter": "-Lp/2 + dPin/2",
+        "Ycenter": "sPins"
+      }
+    }
+  ],
+  "boolean_operations": [
+    {
+      "op": "Add",
+      "target": "component1:GroundPlane",
+      "tool": "component1:ShortingPin"
+    },
+    {
+      "op": "Add",
+      "target": "component1:GroundPlane",
+      "tool": "component1:FeedPin_Bottom"
+    },
+    {
+      "op": "Add",
+      "target": "component1:RadiatingPatch",
+      "tool": "component1:FeedPin_Top"
+    }
+  ],
+  "port": {
+    "type": "DiscretePort",
+    "impedance_ohm": 50.0,
+    "P1": "(-Lp/2, sPins, t_cu+h-gPort)",
+    "P2": "(-Lp/2, sPins, t_cu+h)"
+  }
+}

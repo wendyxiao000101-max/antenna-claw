@@ -1,0 +1,60 @@
+{
+  "antenna_type": "PIFA",
+  "substrate": "air",
+  "template": "air_pifa_v1",
+  "parameters": {
+    "t_cu": 0.035,
+    "Lg": 60.0,
+    "Wg": 40.0,
+    "h": 6.0,
+    "Lp": 18.142361,
+    "Wp": 12.4,
+    "dPin": 1.0,
+    "sPins": 1.34,
+    "gPort": 0.2
+  },
+  "solids": [
+    {
+      "name": "GroundPlane",
+      "shape": "Brick",
+      "component": "component1",
+      "material": "Copper (annealed)",
+      "role": "Ground plane"
+    },
+    {
+      "name": "RadiatingPatch",
+      "shape": "Brick",
+      "component": "component1",
+      "material": "Copper (annealed)",
+      "role": "Radiating patch"
+    },
+    {
+      "name": "ShortingPin",
+      "shape": "Cylinder",
+      "component": "component1",
+      "material": "Copper (annealed)",
+      "role": "Shorting pin connecting patch to ground"
+    },
+    {
+      "name": "FeedPin_Bottom",
+      "shape": "Cylinder",
+      "component": "component1",
+      "material": "Copper (annealed)",
+      "role": "Feed pin lower segment (ground side)"
+    },
+    {
+      "name": "FeedPin_Top",
+      "shape": "Cylinder",
+      "component": "component1",
+      "material": "Copper (annealed)",
+      "role": "Feed pin upper segment (patch side)"
+    },
+    {
+      "name": "FeedPort_Gap",
+      "shape": "Cylinder",
+      "component": "component1",
+      "material": "Vacuum",
+      "role": "Discrete-port gap between feed-pin segments"
+    }
+  ]
+}

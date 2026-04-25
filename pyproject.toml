@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "leam"
+version = "0.3.0"
+description = "LLM-enabled antenna modeling backend service for OpenClaw"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {file = "LICENSE"}
+dependencies = [
+  "openai>=2.0.0",
+]
+
+[project.scripts]
+leam = "leam.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+leam = ["prompts/*.md", "resources/*.md"]

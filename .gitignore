@@ -1,0 +1,41 @@
+# Local configuration / secrets
+config.json
+.env
+.env.*
+*.pem
+*.key
+
+# Python cache / compiled
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+.venv_broken/
+venv/
+env/
+
+# Packaging artifacts
+*.egg-info/
+dist/
+build/
+*.whl
+
+# Jupyter / IPython
+.ipynb_checkpoints/
+
+# Runtime outputs
+.leam/
+examples/output/**
+outputs/
+*.cst~
+*.log
+*.bas
+
+# Local docs
+docs/cst interface.md
+todo_list.md
