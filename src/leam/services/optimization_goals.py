@@ -5,7 +5,7 @@ OpenClaw (``{template, args}``) into:
 
 - a deterministic ``goal_id`` (per-template + args-hash),
 - a CST-compatible goal representation (function + target + operator),
-- a VBA snippet that configures ``Optimizer1D`` with that goal.
+- a VBA snippet that configures CST's ``Optimizer`` with that goal.
 
 The companion validation layer (arg ranges, required fields, unit
 normalization) is added in the next refactor cut (``harden-optimizer-intent``).
@@ -143,25 +143,21 @@ def _bandwidth_max_in_band(args: Dict[str, Any]) -> GoalPlan:
 def _resonance_align_to_frequency(args: Dict[str, Any]) -> GoalPlan:
     freq_ghz = _require_float(args, "frequency_ghz")
     tolerance_mhz = float(args.get("tolerance_mhz", 50.0))
+    target_db = float(args.get("target_db", -30.0))
     weight = float(args.get("weight", 1.0))
     if tolerance_mhz <= 0:
         raise ValueError("tolerance_mhz must be positive")
 
-    half_band = tolerance_mhz / 1000.0  # MHz -> GHz
-    freq_start = freq_ghz - half_band
-    freq_stop = freq_ghz + half_band
-
     vba = _emit_goal_vba(
         function_type="S11,1",
-        operator="minimize",
-        target=None,
-        freq_range=(freq_start, freq_stop),
+        operator="<",
+        target=target_db,
+        freq_ghz=freq_ghz,
         weight=weight,
         comment=(
-            "Minimize |S11| inside "
-            f"{_fmt_number(freq_start)}-{_fmt_number(freq_stop)} GHz to pull "
-            f"resonance toward {_fmt_number(freq_ghz)} GHz "
-            f"(\u00b1{_fmt_number(tolerance_mhz)} MHz)"
+            f"Force |S11| below {target_db} dB at "
+            f"{_fmt_number(freq_ghz)} GHz so resonance is pulled to the target "
+            f"(requested tolerance +/-{_fmt_number(tolerance_mhz)} MHz)"
         ),
     )
     return GoalPlan(
@@ -169,11 +165,13 @@ def _resonance_align_to_frequency(args: Dict[str, Any]) -> GoalPlan:
         args={
             "frequency_ghz": freq_ghz,
             "tolerance_mhz": tolerance_mhz,
+            "target_db": target_db,
             "weight": weight,
         },
         description=(
-            f"Align resonance to {freq_ghz:g} GHz within ±{tolerance_mhz:g} MHz "
-            f"(weight={weight:g})."
+            f"Force resonance toward {freq_ghz:g} GHz by requiring "
+            f"|S11| < {target_db:g} dB at the target frequency "
+            f"(tolerance={tolerance_mhz:g} MHz, weight={weight:g})."
         ),
         vba_snippet=vba,
     )
@@ -202,23 +200,26 @@ def _emit_goal_vba(
     2021.
     """
     lines: List[str] = [
-        "With Optimizer1D",
-        " .AddGoal",
+        "Dim goalID As Long",
+        "With Optimizer",
+        ' goalID = .AddGoal("1DC Primary Result")',
+        " .SelectGoal goalID, True",
+        ' .SetGoal1DCResultName "1D Results\\S-Parameters\\S1,1"',
+        ' .SetGoalScalarType "magdB20"',
         f' .SetGoalOperator "{_operator_token(operator)}"',
-        f' .SetGoalSParameter "{function_type}"',
     ]
     if freq_range is not None:
         start_ghz = _fmt_number(freq_range[0])
         stop_ghz = _fmt_number(freq_range[1])
-        lines.append(f' .SetGoalRangeType "Range"')
-        lines.append(f' .SetGoalRange "{start_ghz}", "{stop_ghz}"')
+        lines.append(' .SetGoalRangeType "range"')
+        lines.append(f" .SetGoalRange {start_ghz}, {stop_ghz}")
     elif freq_ghz is not None:
         point = _fmt_number(freq_ghz)
-        lines.append(f' .SetGoalRangeType "SinglePoint"')
-        lines.append(f' .SetGoalRange "{point}", "{point}"')
+        lines.append(' .SetGoalRangeType "single"')
+        lines.append(f" .SetGoalRange {point}, {point}")
     if target is not None:
-        lines.append(f' .SetGoalTarget "{_fmt_number(target)}"')
-    lines.append(f' .SetGoalWeight "{_fmt_number(weight)}"')
+        lines.append(f" .SetGoalTarget {_fmt_number(target)}")
+    lines.append(f" .SetGoalWeight {_fmt_number(weight)}")
     if comment:
         lines.append(f" ' {comment}")
     lines.append("End With")

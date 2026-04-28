@@ -23,4 +23,9 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-leam = ["prompts/*.md", "resources/*.md"]
+leam = [
+  "prompts/*.md",
+  "resources/*.md",
+  "templates/*/TEMPLATE.md",
+  "templates/*/data/*.json",
+]

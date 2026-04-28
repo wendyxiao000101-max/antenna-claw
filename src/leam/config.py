@@ -7,12 +7,14 @@ from typing import Dict, Optional, Tuple
 CONFIG_FILE = "config.json"
 ENV_CST_PATH = "CST_PATH"
 ENV_OPENAI_API_KEY = "OPENAI_API_KEY"
+ENV_LEAM_OPENAI_API_KEY = "LEAM_OPENAI_API_KEY"
+ENV_LEAM_ALLOW_GLOBAL_OPENAI_API_KEY = "LEAM_ALLOW_GLOBAL_OPENAI_API_KEY"
 
 
 def load_config(config_file: str = CONFIG_FILE) -> Dict:
     """Load configuration from disk."""
     if os.path.exists(config_file):
-        with open(config_file, "r", encoding="utf-8") as file:
+        with open(config_file, "r", encoding="utf-8-sig") as file:
             return json.load(file)
     return {}
 
@@ -29,8 +31,20 @@ def resolve_cst_path(config: Dict) -> Optional[str]:
 
 
 def resolve_openai_api_key(config: Dict) -> Optional[str]:
-    """Resolve OpenAI API key from environment or config."""
-    return os.environ.get(ENV_OPENAI_API_KEY) or config.get("openai_api_key")
+    """Resolve the OpenAI API key for LEAM only.
+
+    LEAM intentionally avoids reading the generic OPENAI_API_KEY by default.
+    OpenClaw/Codex may use its own auth path, and a process-wide
+    OPENAI_API_KEY can accidentally force every OpenAI SDK call in the host
+    process to use the user's paid API key. Use LEAM_OPENAI_API_KEY or local
+    config.json instead.
+    """
+    api_key = config.get("openai_api_key") or os.environ.get(ENV_LEAM_OPENAI_API_KEY)
+    if api_key:
+        return api_key
+    if os.environ.get(ENV_LEAM_ALLOW_GLOBAL_OPENAI_API_KEY) == "1":
+        return os.environ.get(ENV_OPENAI_API_KEY)
+    return None
 
 
 def ensure_openai_api_key(config_file: str = CONFIG_FILE) -> str:
@@ -39,10 +53,9 @@ def ensure_openai_api_key(config_file: str = CONFIG_FILE) -> str:
     api_key = resolve_openai_api_key(config)
     if not api_key:
         raise RuntimeError(
-            "OpenAI API key not configured. Set OPENAI_API_KEY or add "
-            "openai_api_key to config.json."
+            "OpenAI API key not configured for LEAM. Set LEAM_OPENAI_API_KEY "
+            "or add openai_api_key to LEAM's local config.json."
         )
-    os.environ.setdefault(ENV_OPENAI_API_KEY, api_key)
     return api_key
 
 

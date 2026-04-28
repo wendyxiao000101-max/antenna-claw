@@ -32,7 +32,11 @@ from .optimization_goals import GOAL_TEMPLATES
 from .parameter_service import ParameterService
 
 
-DEFAULT_ALGORITHM = "Trust Region Framework"
+DEFAULT_ALGORITHM = "Nelder Mead Simplex"
+POPULATION_ALGORITHMS: Tuple[str, ...] = (
+    "Genetic Algorithm",
+    "Particle Swarm Optimization",
+)
 ALLOWED_ALGORITHMS: Tuple[str, ...] = (
     "Trust Region Framework",
     "Nelder Mead Simplex",
@@ -63,8 +67,8 @@ GOAL_SCHEMA: Dict[str, Dict[str, Any]] = {
     },
     "resonance_align_to_frequency": {
         "required": ("frequency_ghz",),
-        "optional": ("tolerance_mhz", "weight"),
-        "defaults": {"tolerance_mhz": 50.0, "weight": 1.0},
+        "optional": ("tolerance_mhz", "target_db", "weight"),
+        "defaults": {"tolerance_mhz": 50.0, "target_db": -30.0, "weight": 1.0},
         "description": (
             "在 frequency_ghz ± tolerance_mhz/2 区间内把 |S11| 的最小值往中心推。"
         ),
@@ -81,6 +85,9 @@ FREQ_UNIT_TO_GHZ: Dict[str, float] = {
 
 
 MAX_EVALUATIONS_BOUNDS = (1, 500)
+MAX_ITERATIONS_BOUNDS = (1, 500)
+POPULATION_SIZE_BOUNDS = (1, 200)
+BUDGET_POLICY = "strict_total_solver_runs"
 
 
 def _error(code: str, field: str, message: str, suggestion: str = "") -> Dict[str, str]:
@@ -132,6 +139,9 @@ class OptimizationValidationService:
             "goals": [],
             "algorithm": DEFAULT_ALGORITHM,
             "max_evaluations": 40,
+            "max_iterations": None,
+            "population_size": None,
+            "optimizer_budget": {},
             "use_current_as_init": True,
             "natural_language": "",
             "notes": "",
@@ -177,6 +187,27 @@ class OptimizationValidationService:
         )
         normalized["max_evaluations"] = self._validate_max_evaluations(
             request.get("max_evaluations"), errors, warnings
+        )
+        normalized["max_iterations"] = self._validate_optional_positive_int(
+            request.get("max_iterations"),
+            "max_iterations",
+            MAX_ITERATIONS_BOUNDS,
+            errors,
+        )
+        normalized["population_size"] = self._validate_optional_positive_int(
+            request.get("population_size"),
+            "population_size",
+            POPULATION_SIZE_BOUNDS,
+            errors,
+        )
+        normalized["optimizer_budget"] = self._plan_optimizer_budget(
+            algorithm=normalized["algorithm"],
+            variable_count=len(normalized["variables"]),
+            max_evaluations=normalized["max_evaluations"],
+            max_iterations=normalized["max_iterations"],
+            population_size=normalized["population_size"],
+            errors=errors,
+            warnings=warnings,
         )
         normalized["use_current_as_init"] = bool(
             request.get("use_current_as_init", True)
@@ -569,6 +600,119 @@ class OptimizationValidationService:
             value = high
         return value
 
+    def _validate_optional_positive_int(
+        self,
+        raw: Any,
+        field: str,
+        bounds: Tuple[int, int],
+        errors: List[Dict[str, str]],
+    ) -> Optional[int]:
+        if raw is None or raw == "":
+            return None
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            errors.append(
+                _error(
+                    f"{field.upper()}_INVALID",
+                    field,
+                    f"{field}={raw!r} is not an integer.",
+                    f"Use an integer between {bounds[0]} and {bounds[1]}.",
+                )
+            )
+            return None
+        low, high = bounds
+        if value < low or value > high:
+            errors.append(
+                _error(
+                    f"{field.upper()}_OUT_OF_RANGE",
+                    field,
+                    f"{field}={value} is outside [{low}, {high}].",
+                    f"Use an integer between {low} and {high}.",
+                )
+            )
+            return None
+        return value
+
+    def _plan_optimizer_budget(
+        self,
+        *,
+        algorithm: str,
+        variable_count: int,
+        max_evaluations: int,
+        max_iterations: Optional[int],
+        population_size: Optional[int],
+        errors: List[Dict[str, str]],
+        warnings: List[Dict[str, str]],
+    ) -> Dict[str, Any]:
+        if algorithm not in POPULATION_ALGORITHMS:
+            if max_iterations is not None or population_size is not None:
+                warnings.append(
+                    _error(
+                        "BUDGET_POPULATION_FIELDS_IGNORED",
+                        "optimizer_budget",
+                        "max_iterations/population_size only apply to Genetic Algorithm or Particle Swarm Optimization.",
+                        "For local optimizers LEAM uses max_evaluations directly.",
+                    )
+                )
+            return {
+                "requested_max_evaluations": max_evaluations,
+                "algorithm_family": "single_point",
+                "cst_limit_type": "evaluations",
+                "max_evaluations": max_evaluations,
+                "max_iterations": None,
+                "population_size": None,
+                "estimated_solver_runs": max_evaluations,
+                "cst_estimated_solver_runs": max_evaluations,
+                "budget_policy": BUDGET_POLICY,
+                "requires_user_confirmation": True,
+                "population_size_control": "not_applicable",
+            }
+
+        effective_population = population_size
+        if effective_population is None:
+            effective_population = min(12, max(4, 2 * max(0, variable_count) + 2))
+
+        effective_iterations = max_iterations
+        if effective_iterations is None:
+            effective_iterations = max(1, max_evaluations // effective_population)
+
+        conservative_runs = effective_iterations * effective_population
+        cst_estimate = int(((effective_iterations + 1) * effective_population) / 2 + 1)
+
+        explicit_over_budget = (
+            max_iterations is not None
+            and population_size is not None
+            and conservative_runs > max_evaluations
+        )
+        auto_over_budget = conservative_runs > max_evaluations
+        if explicit_over_budget or auto_over_budget:
+            errors.append(
+                _error(
+                    "OPTIMIZER_BUDGET_EXCEEDS_MAX_EVALUATIONS",
+                    "optimizer_budget",
+                    (
+                        f"{algorithm} budget would allow about {conservative_runs} "
+                        f"solver runs, above max_evaluations={max_evaluations}."
+                    ),
+                    "Reduce max_iterations/population_size or increase max_evaluations.",
+                )
+            )
+
+        return {
+            "requested_max_evaluations": max_evaluations,
+            "algorithm_family": "population",
+            "cst_limit_type": "iterations",
+            "max_evaluations": max_evaluations,
+            "max_iterations": effective_iterations,
+            "population_size": effective_population,
+            "estimated_solver_runs": conservative_runs,
+            "cst_estimated_solver_runs": cst_estimate,
+            "budget_policy": BUDGET_POLICY,
+            "requires_user_confirmation": True,
+            "population_size_control": "SetGenerationSize",
+        }
+
 
 # ---------------------------------------------------------------------------
 # Module-level helpers
@@ -644,7 +788,7 @@ def _example_for_goal(template: str) -> str:
     examples = {
         "s11_min_at_frequency": '{"frequency_ghz": 2.4, "threshold_db": -10}',
         "bandwidth_max_in_band": '{"freq_start_ghz": 2.4, "freq_stop_ghz": 2.5, "threshold_db": -10}',
-        "resonance_align_to_frequency": '{"frequency_ghz": 2.45, "tolerance_mhz": 50}',
+        "resonance_align_to_frequency": '{"frequency_ghz": 2.45, "tolerance_mhz": 50, "target_db": -30}',
     }
     return examples.get(template, "{...}")
 

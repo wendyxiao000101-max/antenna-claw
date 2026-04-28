@@ -32,7 +32,7 @@ def _doctor() -> int:
     else:
         _print_status("OpenAI API key", False)
         print(
-            "Set OPENAI_API_KEY or add openai_api_key to config.json."
+            "Set LEAM_OPENAI_API_KEY or add openai_api_key to LEAM's local config.json."
         )
         overall_ok = False
 

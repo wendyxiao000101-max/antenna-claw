@@ -76,16 +76,34 @@ class RerunWorkflow:
                 print(" -", warning)
 
         if execution_mode == "simulate_only":
-            self.cst_gateway.simulate_existing_project(
-                session.paths.cst,
-                validation["config"],
-                results_dir=session.paths.results_dir,
-                manifest_path=session.paths.manifest,
-                audit_path=session.paths.simulation_audit,
-                nl_request=simulation_request,
-                parsed_config=raw_cfg,
-                validation=validation,
-            )
+            if session.paths.cst.exists():
+                self.cst_gateway.simulate_existing_project(
+                    session.paths.cst,
+                    validation["config"],
+                    results_dir=session.paths.results_dir,
+                    manifest_path=session.paths.manifest,
+                    audit_path=session.paths.simulation_audit,
+                    nl_request=simulation_request,
+                    parsed_config=raw_cfg,
+                    validation=validation,
+                )
+            else:
+                print(
+                    "\n未找到已有 .cst 工程；将复用现有 .json/.bas 产物"
+                    "创建 CST 工程并立即仿真导出。"
+                )
+                tasks = self.cst_gateway.build_history_tasks(session.paths)
+                self.cst_gateway.run_with_simulation(
+                    history_tasks=tasks,
+                    save_path=session.paths.cst,
+                    simulation_config=validation["config"],
+                    results_dir=session.paths.results_dir,
+                    manifest_path=session.paths.manifest,
+                    audit_path=session.paths.simulation_audit,
+                    nl_request=simulation_request,
+                    parsed_config=raw_cfg,
+                    validation=validation,
+                )
             return
 
         raise RuntimeError(f"未知执行模式: {execution_mode}")

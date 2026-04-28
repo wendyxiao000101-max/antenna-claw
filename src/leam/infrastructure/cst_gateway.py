@@ -1,6 +1,7 @@
 """Gateway wrapper for CST execution."""
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -10,7 +11,7 @@ from ..models import SessionPaths
 from ..services.optimization_goals import GoalPlan
 from ..services.parameter_service import ParameterService
 from ..services.simulation_validation_service import SimulationValidationService
-from ..tools import CstRunner, strip_parameters_store_call
+from ..tools import CstRunner
 
 
 class CstGateway:
@@ -120,8 +121,6 @@ class CstGateway:
             runner.create_project(str(save_path), close_project_after_save=False)
             runner.run_simulation(simulation_config)
             export_result = runner.export_s11(str(export_path), export_format=export_format)
-            if runner.prj is not None:
-                runner.prj.save(str(save_path), include_results=True)
 
             manifest = self._manifest_base(simulation_config, status="success")
             manifest.update(
@@ -185,8 +184,6 @@ class CstGateway:
         try:
             runner.run_simulation(simulation_config)
             export_result = runner.export_s11(str(export_path), export_format=export_format)
-            if runner.prj is not None:
-                runner.prj.save(str(project_path), include_results=True)
 
             manifest = self._manifest_base(simulation_config, status="success")
             manifest.update(
@@ -210,8 +207,121 @@ class CstGateway:
             runner.close_project()
 
     # ------------------------------------------------------------------
-    # CST Optimizer1D flow
+    # CST Optimizer flow
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _cst_project_folder(project_path: Path) -> Path:
+        """Return CST's sidecar project folder for ``foo.cst``."""
+        return project_path.with_suffix("")
+
+    @staticmethod
+    def _read_optimizer_text(path: Path) -> str:
+        if not path.exists():
+            return ""
+        return path.read_text(encoding="utf-8-sig", errors="ignore")
+
+    @classmethod
+    def _parse_optimizer_diagnostics(cls, project_path: Path) -> Dict[str, Any]:
+        """Parse CST optimizer result files into machine-checkable diagnostics.
+
+        CST can return from ``Optimizer.Start`` even when it only reloaded old
+        points or aborted after a solver error. The files under
+        ``<project>/Result`` are the most reliable post-run source of truth.
+        """
+        result_dir = cls._cst_project_folder(project_path) / "Result"
+        model_opt = result_dir / "Model.opt"
+        model_ui_opt = result_dir / "Model_ui.opt"
+        model_text = cls._read_optimizer_text(model_opt)
+        ui_text = cls._read_optimizer_text(model_ui_opt)
+        combined = "\n".join(part for part in (ui_text, model_text) if part)
+
+        def _int_match(pattern: str, text: str) -> Optional[int]:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            return int(match.group(1)) if match else None
+
+        total = _int_match(r"Number of evaluations:\s*(\d+)", ui_text)
+        solver = _int_match(r"\(\s*solver:\s*(\d+)", ui_text)
+        reloaded = _int_match(r"reloaded:\s*(\d+)\s*\)", ui_text)
+
+        if total is None:
+            total = _int_match(
+                r"Total optimizer time\s*=.*?\(\s*(\d+)\s+evaluations?\s*\)",
+                model_text,
+            )
+
+        lower = combined.lower()
+        solver_error = (
+            "*** solver error ***" in lower
+            or "solver error" in lower
+            or "could not be solved for the parameters" in lower
+        )
+        aborted = "optimization process aborted due to previous error" in lower
+        no_new = solver == 0 if solver is not None else False
+
+        failed_parameters: Dict[str, str] = {}
+        failed_match = re.search(
+            r"could not be solved for the parameters:\s*(.*?)(?:\(\s*Corresponding|Optimization process aborted|$)",
+            model_text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if failed_match:
+            for name, value in re.findall(
+                r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^\r\n]+)",
+                failed_match.group(1),
+                flags=re.MULTILINE,
+            ):
+                failed_parameters[name.strip()] = value.strip()
+
+        goal_values: Dict[str, str] = {}
+        for key, label in (
+            ("initial_goal_function_value", "Initial"),
+            ("best_goal_function_value", "Best"),
+            ("last_goal_function_value", "Last"),
+        ):
+            match = re.search(
+                rf"{label}\s+goal function value\s*=\s*([^\r\n]+)",
+                combined,
+                flags=re.IGNORECASE,
+            )
+            if match:
+                goal_values[key] = match.group(1).strip()
+
+        diagnostics: Dict[str, Any] = {
+            "model_opt": str(model_opt) if model_opt.exists() else None,
+            "model_ui_opt": str(model_ui_opt) if model_ui_opt.exists() else None,
+            "total_evaluations": total,
+            "solver_evaluations": solver,
+            "reloaded_evaluations": reloaded,
+            "solver_error": solver_error,
+            "aborted_due_to_error": aborted,
+            "no_new_solver_evaluations": no_new,
+            "failed_parameters": failed_parameters,
+            **goal_values,
+        }
+
+        if solver_error or aborted:
+            diagnostics["status"] = "optimizer_solver_error"
+            diagnostics["message"] = (
+                "CST optimizer aborted because at least one trial point caused "
+                "a solver error. Treat this run as failed, not optimized."
+            )
+        elif no_new:
+            diagnostics["status"] = "optimizer_no_new_solver_evaluations"
+            diagnostics["message"] = (
+                "CST optimizer did not run any new solver evaluations; it only "
+                "reused/reloaded previous results."
+            )
+        elif not model_text and not ui_text:
+            diagnostics["status"] = "optimizer_diagnostics_unavailable"
+            diagnostics["message"] = (
+                "CST optimizer result files were not found, so LEAM could not "
+                "verify how many evaluations actually ran."
+            )
+        else:
+            diagnostics["status"] = "ok"
+
+        return diagnostics
 
     def run_optimization(
         self,
@@ -219,24 +329,26 @@ class CstGateway:
         paths: SessionPaths,
         variables: List[Dict[str, Any]],
         goals: List[GoalPlan],
-        algorithm: str = "Trust Region Framework",
+        algorithm: str = "Nelder Mead Simplex",
         max_evaluations: int = 40,
+        max_iterations: Optional[int] = None,
+        population_size: Optional[int] = None,
+        optimizer_budget: Optional[Dict[str, Any]] = None,
         use_current_as_init: bool = True,
         nl_request: str = "",
         parsed_request: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Run CST's Optimizer1D on an existing ``.cst`` project.
+        """Run CST's Optimizer on an existing ``.cst`` project.
 
         Follows the ParameterList / History separation principle:
 
         1. Python seeds ``ParameterList`` directly with the initial
            values from ``<output>_parameters.bas`` *and* any explicit
            ``init`` supplied in ``variables``.
-        2. The geometry-referencing VBAs (parameters/materials/model/
-           boolean) are re-applied to history with the final
-           ``StoreParameters names, values`` call stripped, so the
-           optimizer's trial values never get overwritten.
-        3. Optimizer1D is configured with the variables, goals, and
+        2. The existing CST project is optimized in place. Geometry and
+           boolean history macros are not replayed because those steps
+           are not idempotent after solids have been combined.
+        3. CST's Optimizer is configured with the variables, goals, and
            algorithm, then started synchronously.
         4. Best-so-far parameter values are read back via the Python
            API and persisted alongside an optimization manifest.
@@ -264,20 +376,17 @@ class CstGateway:
             "goals": [g.to_dict() for g in goals],
             "algorithm": algorithm,
             "max_evaluations": max_evaluations,
+            "max_iterations": max_iterations,
+            "population_size": population_size,
+            "optimizer_budget": optimizer_budget or {},
             "use_current_as_init": use_current_as_init,
             "initial_parameters": seeds,
         }
         self._write_json(paths.optimization_audit, audit_payload)
 
-        print("\n开始连接 CST 并执行 Optimizer1D ...")
+        print("\n开始连接 CST 并执行 Optimizer ...")
         self._setup_cst_pythonpath()
         runner = CstRunner(create_new_if_none=False, project_path=str(project_path))
-
-        stripped_parameters_path = opt_dir / "parameters_optimizer_safe.bas"
-        stripped_parameters_path.write_text(
-            strip_parameters_store_call(paths.parameters.read_text(encoding="utf-8")),
-            encoding="utf-8",
-        )
 
         manifest = self._manifest_base(
             simulation_config={}, status="running"
@@ -287,11 +396,15 @@ class CstGateway:
                 "mode": "optimizer",
                 "algorithm": algorithm,
                 "max_evaluations": max_evaluations,
+                "max_iterations": max_iterations,
+                "population_size": population_size,
+                "optimizer_budget": optimizer_budget or {},
                 "source_project": str(project_path),
                 "variables": variables,
                 "goals": [g.to_dict() for g in goals],
             }
         )
+        optimizer_diagnostics: Dict[str, Any] = {}
 
         try:
             runner.store_parameters(seeds)
@@ -299,32 +412,63 @@ class CstGateway:
                 if var.get("init") is not None:
                     runner.store_parameter(var["name"], var["init"])
 
-            runner.add_to_history("Parameters (optimizer-safe)", str(stripped_parameters_path))
-            if paths.materials.exists():
-                runner.add_to_history("Materials", str(paths.materials))
-            if paths.model.exists():
-                runner.add_to_history("3D Model", str(paths.model))
-            if paths.boolean.exists():
-                runner.add_to_history("Boolean Operations", str(paths.boolean))
+            project_parameters = runner.get_project_parameters()
+            missing_before_optimizer = [
+                str(var["name"])
+                for var in variables
+                if str(var["name"]) not in project_parameters
+            ]
+            if missing_before_optimizer:
+                available = ", ".join(sorted(project_parameters)) or "(none)"
+                raise RuntimeError(
+                    "CST project ParameterList is missing optimizer variables "
+                    f"before optimizer setup: {', '.join(missing_before_optimizer)}. "
+                    f"Available CST parameters: {available}. "
+                    "Close stale CST project windows and reopen the target .cst, "
+                    "or rebuild the project before optimization."
+                )
 
             runner.configure_optimizer(
                 variables=variables,
                 goals_vba=[g.vba_snippet for g in goals],
                 algorithm=algorithm,
                 max_evaluations=max_evaluations,
+                max_iterations=max_iterations,
+                population_size=population_size,
+                optimizer_budget=optimizer_budget,
                 use_current_as_init=use_current_as_init,
             )
             runner.run_optimizer()
+            optimizer_diagnostics = self._parse_optimizer_diagnostics(project_path)
+            manifest["optimizer_diagnostics"] = optimizer_diagnostics
+            diag_status = optimizer_diagnostics.get("status")
+            if diag_status in {
+                "optimizer_solver_error",
+                "optimizer_no_new_solver_evaluations",
+            }:
+                raise RuntimeError(
+                    str(optimizer_diagnostics.get("message") or diag_status)
+                )
 
-            best_params: Dict[str, str] = {}
+            best_params: Dict[str, str] = runner.get_optimizer_parameters()
             for var in variables:
                 name = var["name"]
+                if name in best_params:
+                    continue
                 value = runner.get_parameter(name)
                 if value is not None:
                     best_params[name] = value
 
-            if runner.prj is not None:
-                runner.prj.save(str(project_path), include_results=True)
+            missing = [
+                str(var["name"])
+                for var in variables
+                if str(var["name"]) not in best_params
+            ]
+            if missing:
+                raise RuntimeError(
+                    "CST optimizer finished, but LEAM could not read back "
+                    "optimized parameter values for: " + ", ".join(missing)
+                )
 
             self._write_json(
                 paths.best_parameters,
@@ -333,10 +477,18 @@ class CstGateway:
                     "seeds": seeds,
                     "variables": variables,
                     "algorithm": algorithm,
+                    "optimizer_budget": optimizer_budget or {},
+                    "optimizer_diagnostics": optimizer_diagnostics,
                 },
             )
 
-            manifest.update({"status": "success", "best_parameters": best_params})
+            manifest.update(
+                {
+                    "status": "success",
+                    "best_parameters": best_params,
+                    "optimizer_diagnostics": optimizer_diagnostics,
+                }
+            )
             self._write_json(paths.optimization_manifest, manifest)
             print(
                 f"已完成优化: 共 {len(variables)} 个参数，{len(goals)} 个 goal "
@@ -344,6 +496,10 @@ class CstGateway:
             )
             return manifest
         except Exception as exc:
+            if not optimizer_diagnostics:
+                optimizer_diagnostics = self._parse_optimizer_diagnostics(project_path)
+            if optimizer_diagnostics:
+                manifest["optimizer_diagnostics"] = optimizer_diagnostics
             manifest.update({"status": "failed", "error": str(exc)})
             self._write_json(paths.optimization_manifest, manifest)
             raise

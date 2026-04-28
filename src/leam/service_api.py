@@ -115,8 +115,13 @@ class OptimizationRequest:
       ``{"name": str, "min": float, "max": float, "init": float?}``.
     - ``goals`` is a list of ``{"template": str, "args": {...}}`` items
       drawn from :data:`leam.services.GOAL_TEMPLATES`.
-    - ``algorithm`` defaults to CST's Trust Region Framework; any string
-      accepted by ``Optimizer1D.SetAlgorithm`` can be passed.
+    - ``algorithm`` defaults to Nelder Mead Simplex because geometry-sensitive
+      CST models can abort early with Trust Region after a single bad point.
+      Any whitelisted CST optimizer string can still be passed explicitly.
+    - ``max_evaluations`` is the total solver-run budget OpenClaw must confirm
+      with the user. For PSO/GA, LEAM converts it into ``max_iterations`` and
+      ``population_size`` and returns the effective ``optimizer_budget`` from
+      validation.
 
     Strict validation (required fields, range checks, unit handling) is
     applied by :class:`~leam.services.OptimizationValidationService`
@@ -128,8 +133,10 @@ class OptimizationRequest:
     output_name: str
     variables: List[Dict[str, Any]] = field(default_factory=list)
     goals: List[Dict[str, Any]] = field(default_factory=list)
-    algorithm: str = "Trust Region Framework"
+    algorithm: str = DEFAULT_ALGORITHM
     max_evaluations: int = 40
+    max_iterations: Optional[int] = None
+    population_size: Optional[int] = None
     use_current_as_init: bool = True
     natural_language: str = ""
     notes: str = ""
@@ -369,6 +376,9 @@ class LeamService:
         goals = normalized.get("goals") or request.goals
         algorithm = normalized.get("algorithm") or request.algorithm
         max_evaluations = normalized.get("max_evaluations") or request.max_evaluations
+        max_iterations = normalized.get("max_iterations")
+        population_size = normalized.get("population_size")
+        optimizer_budget = normalized.get("optimizer_budget") or {}
 
         goal_plans: List[GoalPlan] = [
             build_goal_plan(g["template"], g.get("args", {})) for g in goals
@@ -382,6 +392,9 @@ class LeamService:
                 goals=goal_plans,
                 algorithm=algorithm,
                 max_evaluations=max_evaluations,
+                max_iterations=max_iterations,
+                population_size=population_size,
+                optimizer_budget=optimizer_budget,
                 use_current_as_init=request.use_current_as_init,
                 nl_request=request.natural_language,
                 parsed_request={
@@ -389,6 +402,9 @@ class LeamService:
                     "goals": goals,
                     "algorithm": algorithm,
                     "max_evaluations": max_evaluations,
+                    "max_iterations": max_iterations,
+                    "population_size": population_size,
+                    "optimizer_budget": optimizer_budget,
                     "notes": request.notes,
                 },
             )
@@ -888,6 +904,8 @@ def _request_to_dict(request: OptimizationRequest) -> Dict[str, Any]:
         "goals": list(request.goals or []),
         "algorithm": request.algorithm,
         "max_evaluations": request.max_evaluations,
+        "max_iterations": request.max_iterations,
+        "population_size": request.population_size,
         "use_current_as_init": request.use_current_as_init,
         "natural_language": request.natural_language,
         "notes": request.notes,
@@ -1125,7 +1143,10 @@ def _optimization_schema_hint() -> Dict[str, Any]:
             }
         ],
         "algorithm": f"one of {list(ALLOWED_ALGORITHMS)} (default {DEFAULT_ALGORITHM!r})",
-        "max_evaluations": "integer 1-500 (default 40)",
+        "max_evaluations": "integer 1-500 total solver-run budget (default 40)",
+        "max_iterations": "optional integer for Particle Swarm / Genetic Algorithm iterations",
+        "population_size": "optional integer for Particle Swarm particles / Genetic Algorithm population",
+        "optimizer_budget": "returned by validation; OpenClaw must show estimated_solver_runs and get user confirmation before execution",
         "use_current_as_init": "boolean (default true)",
         "natural_language": "string (raw user utterance, optional)",
         "notes": "string (extra OpenClaw-side annotations, optional)",
