@@ -2,182 +2,302 @@
 
 ![LEAM Logo](assets/brand/leam-logo.png)
 
-> **LEAM 是为 [OpenClaw](https://github.com/openclaw) 提供天线建模、仿真与 CST Optimizer 调用的无交互后端服务。**
-> 所有聊天、意图识别、S 参数分析、多轮迭代都由 OpenClaw 承担；LEAM 只负责把结构化请求稳定地转成 CST 产物和文件系统合同。
+LEAM (LLM-Enabled Antenna Modeling) is a headless Python backend for OpenClaw. It turns structured antenna-design requests into deterministic CST Studio Suite artifacts: model files, simulation exports, optimizer runs, and parameter-update records.
 
-OpenClaw 集成方请直接阅读：[`docs/OPENCLAW_INTEGRATION.md`](docs/OPENCLAW_INTEGRATION.md)。
+OpenClaw owns the conversation, intent routing, user confirmation, S-parameter analysis, plotting, and design decisions. LEAM owns repeatable execution.
 
----
+## What LEAM Provides
 
-## 这个包对外提供什么
-
-`leam` 是一个纯 Python 包，对外有 5 个入口：
-
-| 接口 | 作用 |
-| --- | --- |
-| `build_and_simulate(request)` | 新建 / 复用一个 output 目录，跑 template 或 new 或 rerun 流水线 |
-| `list_templates()` | 列出内置模板的元数据 |
-| `get_project_context_snapshot(output_name)` | 只读：参数列表、最近一次仿真摘要、goal / 算法白名单 |
-| `validate_optimization_request(request)` | 只读预检：goal 白名单、变量范围、单位归一 |
-| `optimize_parameters(request)` | 在已存在的 `.cst` 工程上调用 CST Optimizer1D |
-
-所有入口都能从 `leam` 顶层直接导入：
+Stable imports are exposed from `leam`:
 
 ```python
+from pathlib import Path
+
 from leam import (
     BuildAndSimulateRequest,
     OptimizationRequest,
+    ParameterUpdateRequest,
     build_and_simulate,
     get_project_context_snapshot,
     list_templates,
     optimize_parameters,
     validate_optimization_request,
+    apply_parameter_updates,
 )
 ```
 
-详细形状、错误码、文件产物合同见 [OPENCLAW_INTEGRATION.md](docs/OPENCLAW_INTEGRATION.md)。
+Main capabilities:
 
----
+- Template/new/rerun antenna model generation.
+- CST project creation, simulation, and S11 CSV export.
+- CST Optimizer integration with validation and result diagnostics.
+- Deterministic post-simulation parameter edits.
+- File-system contracts for OpenClaw under `examples/output/<output_name>/`.
 
-## 关键设计原则
+Built-in template coverage currently includes an air-substrate PIFA template under `src/leam/templates/air_pifa`.
 
-1. **无交互、无副作用**。所有 `input()` 路径已删除；预检 / 快照接口绝不 `mkdir`。
-2. **结构化失败**。优化请求验证失败不抛异常，返回 `OptimizationResult(status="failed", error="validation_failed")`，具体错误码由 `validate_optimization_request` 给出。
-3. **文件系统 = 单真相来源**。每个 output 目录根部写一份 `run.json`，OpenClaw 靠它恢复状态，不需要 SQLite。
-4. **Goal 白名单**。OpenClaw 自然语言抽取出来的 goal 必须落到 `s11_min_at_frequency` / `bandwidth_max_in_band` / `resonance_align_to_frequency` 三选一；算法也有白名单。
-5. **ParameterList 初始化与 VBA 历史分离**。优化前 Python 一次性写 `ParameterList`，VBA 历史只引用参数名，不再 `StoreParameters`——避免 Optimizer1D 的 trial value 被历史重建覆盖。
+## Installation
 
----
-
-## 输出目录结构
-
-每个 `output_name` 对应一个独立目录：
-
-```text
-examples/output/<output_name>/
-├── run.json                           # OpenClaw 的入口清单
-├── <output_name>.json                 # solids
-├── <output_name>_parameters.bas       # ParameterList
-├── <output_name>_dimensions.json
-├── <output_name>_materials.bas
-├── <output_name>_model.bas
-├── <output_name>_boolean.bas
-├── <output_name>.cst                  # 可选
-├── results/
-│   ├── manifest.json                  # 仿真状态
-│   ├── simulation_audit.json
-│   └── sparams/
-│       ├── s11.s1p
-│       └── s11.csv
-└── results/optimization/
-    ├── manifest.json                  # 优化状态
-    ├── audit.json
-    ├── best_parameters.json
-    ├── history.csv
-    └── parameters_optimizer_safe.bas
+```powershell
+cd antenna-claw
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -e .
 ```
 
-字段清单与 schema 版本：见 [OPENCLAW_INTEGRATION.md §7](docs/OPENCLAW_INTEGRATION.md#7-文件系统合同)。
+For CST Studio Suite 2023, use a Python version supported by CST's Python libraries. In practice, Python 3.9 is the safe target for CST-backed runs.
 
----
+Package data includes:
 
-## 安装
+- `prompts/*.md`
+- `resources/*.md`
+- `templates/*/TEMPLATE.md`
+- `templates/*/data/*.json`
 
-```bash
-pip install -e LEAM-main
+## Configuration
+
+Create a local `config.json` or set LEAM-specific environment variables.
+
+Example `config.json`:
+
+```json
+{
+  "cst_path": "C:\\Program Files\\CST Studio Suite 2023",
+  "openai_api_key": "YOUR_API_KEY"
+}
 ```
 
-运行时依赖：
+Environment variables:
 
-- Python 3.9+
-- `openai>=2.0.0`（LLM 生成链路 + 模板匹配建议）
-- CST Studio Suite（仅在调用 `build_and_simulate(run_cst=True)` 或 `optimize_parameters` 时）
+- `CST_PATH`: CST Studio Suite install root.
+- `LEAM_OPENAI_API_KEY`: OpenAI key used only by LEAM.
+- `LEAM_ALLOW_GLOBAL_OPENAI_API_KEY=1`: opt in to reading generic `OPENAI_API_KEY`.
 
-### 配置
+By default, LEAM does not read generic `OPENAI_API_KEY`. This prevents a host process such as OpenClaw or Codex from accidentally routing unrelated OpenAI SDK calls through the user's paid LEAM key.
 
-`leam` 会按以下顺序查找运行配置：
+Check the environment:
 
-1. 环境变量：`OPENAI_API_KEY` / `CST_PATH`
-2. `config.json`（示例见 `config.example.json`）
-
-自检：
-
-```bash
+```powershell
 leam doctor
 ```
 
-这是 `src/leam/cli.py` 里唯一的子命令，只做环境检查，不再启动任何交互式流程。
+`doctor` checks:
 
----
+- LEAM OpenAI key availability.
+- CST install path.
+- CST material library path.
+- CST Python library path.
 
-## 目录结构
+## Core Workflow
 
-```text
-LEAM-main/
-├── src/leam/
-│   ├── __init__.py               # 顶层对外导出
-│   ├── service_api.py            # OpenClaw 入口 dataclass + LeamService
-│   ├── cli.py                    # leam doctor
-│   ├── config.py
-│   ├── workflows/                # new / template / rerun + contracts
-│   ├── templates/                # 模板包（含 air_pifa）
-│   ├── services/
-│   │   ├── optimization_goals.py             # goal → VBA 翻译
-│   │   ├── optimization_validation_service.py # NL → 结构化请求防线
-│   │   ├── parameter_service.py
-│   │   └── ...
-│   ├── tools/                    # CST runner + VBA generator + parameter_vba
-│   ├── infrastructure/           # cst_gateway + output_repository + run_record
-│   ├── models/                   # SessionPaths / DesignSession
-│   ├── core/                     # LLM caller + VBA generator
-│   ├── prompts/                  # LLM prompt 资源
-│   ├── resources/                # VBA / 建模参考资料
-│   └── utils/
-├── docs/
-│   ├── OPENCLAW_INTEGRATION.md   # 集成手册（必读）
-│   └── DEBUGGING_SUMMARY.md
-├── examples/
-│   ├── quickstart.py
-│   ├── demonstration.ipynb
-│   └── output/                   # 运行产物落地处
-└── tests/                        # pytest 套件（64 项）
+### Build And Simulate
+
+```python
+result = build_and_simulate(
+    BuildAndSimulateRequest(
+        description="2.45 GHz air substrate PIFA antenna",
+        output_name="pifa_demo",
+        execution_mode="simulate_and_export",
+        simulation_request="2.0-3.0GHz Open Add Space 50 Ohm",
+        run_cst=True,
+        prefer_template=True,
+    ),
+    project_root=Path.cwd(),
+)
 ```
 
-对外稳定符号都在 `leam.__init__` 的 `__all__` 中；直接从子模块 import 不保证稳定。
+Execution modes:
 
----
+- `build_only`: generate JSON/BAS artifacts only.
+- `simulate_and_export`: build CST project, run solver, export S11.
+- `simulate_only`: rerun an existing output directory.
 
-## 已删除的能力
+### Optimization
 
-相对旧版交互式 LEAM，本版裁掉了以下能力（改由 OpenClaw 承担）：
+Optimization is intentionally a two-step flow:
 
-- `leam.app.run_cli()` / `cli_leam.py` 交互循环
-- `leam.agent.*` 与相关 chat intent / memory 模块
-- SQLite-backed session store
-- 所有 `input()` 确认点（参数审阅、拓扑修订、CST 路径交互配置等）
-- 自动化绘图 / S11 总结（由 OpenClaw 读 Touchstone 完成）
+1. Call `validate_optimization_request`.
+2. Show the normalized variables/goals/budget to the user and get confirmation.
+3. Call `optimize_parameters`.
 
-迁移提示：如果之前 import 过 `leam.app` / `leam.agent` / `leam.services.session_store`，全部需要迁移到 `leam.service_api`。
+```python
+req = OptimizationRequest(
+    output_name="pifa_demo",
+    variables=[
+        {"name": "Lp", "min": 17.2, "max": 18.4},
+        {"name": "sPins", "min": 0.8, "max": 1.8},
+    ],
+    goals=[
+        {
+            "template": "resonance_align_to_frequency",
+            "args": {
+                "frequency_ghz": 2.45,
+                "target_db": -30,
+                "tolerance_mhz": 50,
+            },
+        }
+    ],
+    algorithm="Nelder Mead Simplex",
+    max_evaluations=20,
+)
 
----
+validation = validate_optimization_request(
+    req,
+    project_root=Path.cwd(),
+)
 
-## 开发
+if validation.is_valid:
+    # OpenClaw must show validation.normalized["optimizer_budget"] to the user
+    # and receive confirmation before running CST.
+    result = optimize_parameters(
+        req,
+        project_root=Path.cwd(),
+    )
+```
 
-```bash
-cd LEAM-main
+Supported algorithms:
+
+- `Trust Region Framework`
+- `Nelder Mead Simplex`
+- `Interpolated Quasi Newton`
+- `Classic Powell`
+- `Genetic Algorithm`
+- `Particle Swarm Optimization`
+
+Supported goal templates:
+
+- `s11_min_at_frequency`
+- `bandwidth_max_in_band`
+- `resonance_align_to_frequency`
+
+### Optimizer Budget Semantics
+
+`max_evaluations` always means the user's total solver-run budget.
+
+For local optimizers such as Nelder Mead and Trust Region, LEAM maps this directly to CST `SetMaxEval`.
+
+For population optimizers (`Particle Swarm Optimization` and `Genetic Algorithm`), CST uses iterations and population size. LEAM therefore computes an `optimizer_budget` during validation:
+
+```json
+{
+  "requested_max_evaluations": 36,
+  "algorithm_family": "population",
+  "cst_limit_type": "iterations",
+  "max_iterations": 4,
+  "population_size": 8,
+  "estimated_solver_runs": 32,
+  "budget_policy": "strict_total_solver_runs",
+  "requires_user_confirmation": true,
+  "population_size_control": "SetGenerationSize"
+}
+```
+
+Default population size is:
+
+```text
+min(12, max(4, 2 * variable_count + 2))
+```
+
+If explicit `max_iterations * population_size` exceeds `max_evaluations`, validation fails. This prevents a request like "36 evaluations" from becoming hundreds or thousands of CST solver runs.
+
+### Explicit Parameter Updates
+
+Use this when OpenClaw wants to directly patch known generated parameters without regenerating the design:
+
+```python
+apply_parameter_updates(
+    ParameterUpdateRequest(
+        output_name="pifa_demo",
+        updates={"Lp": 17.6, "sPins": 1.3},
+        purpose="Retune resonance after S11 review",
+    ),
+    project_root=Path.cwd(),
+)
+```
+
+LEAM only accepts existing ParameterList names.
+
+## Output Contract
+
+Each `output_name` maps to:
+
+```text
+examples/output/<output_name>/
+|-- run.json
+|-- <output_name>.json
+|-- <output_name>_parameters.bas
+|-- <output_name>_dimensions.json
+|-- <output_name>_materials.bas
+|-- <output_name>_model.bas
+|-- <output_name>_boolean.bas
+|-- <output_name>.cst
+`-- results/
+    |-- manifest.json
+    |-- simulation_audit.json
+    |-- sparams/
+    |   |-- s11.csv
+    |   `-- s11.s1p
+    `-- optimization/
+        |-- manifest.json
+        |-- audit.json
+        |-- best_parameters.json
+        `-- history.csv
+```
+
+Notes:
+
+- Treat `run.json` as the root record for an output directory.
+- S11 export uses CSV as the reliable path for CST 2023.
+- Touchstone export may degrade to CSV when CST's `TOUCHSTONE.Write` fails.
+- Optimizer status and solver diagnostics live in `results/optimization/manifest.json`.
+
+## CST Integration Notes
+
+LEAM uses CST's `Optimizer` object, not the older `Optimizer1D` API.
+
+Important behaviors:
+
+- Optimizer configuration and start are executed with inline VBA, not added as visible History steps.
+- S11 CSV export reads directly from CST `ResultTree`; it does not depend on the currently selected plot view or `ASCIIExport`.
+- LEAM parses CST optimizer result files such as `Result/Model.opt` and `Result/Model_ui.opt`.
+- Solver errors, zero new solver evaluations, and failed best-parameter readback are reported as failed optimization states rather than silent success.
+
+## Development
+
+```powershell
+cd antenna-claw
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1       # Windows
-# source .venv/bin/activate         # POSIX
+.\.venv\Scripts\Activate.ps1
 pip install -e .
-pip install -r requirements.txt
-
 pytest tests -q
 ```
 
-单元测试共 64 项，覆盖 service facade 路由、优化器白名单、NL → 结构化请求防线、`run.json` 写读、VBA 注释剥离等。
+Build a wheel:
 
----
+```powershell
+python -m pip wheel . -w dist
+```
+
+Local runtime artifacts are ignored by git:
+
+- `config.json`
+- `.env`
+- virtual environments
+- `dist/`, `build/`
+- `examples/output/**`
+
+## Removed Legacy Interfaces
+
+This package is now a headless backend. Do not use removed interactive paths such as:
+
+- `leam.app`
+- `leam.agent.*`
+- old SQLite session-store modules
+- interactive CLI/chat loops
+- `input()`-based confirmations
+
+OpenClaw is responsible for conversation and confirmation. LEAM is responsible for deterministic execution.
 
 ## License
 
-MIT，详见 `LICENSE`。
+MIT. See [LICENSE](LICENSE).
