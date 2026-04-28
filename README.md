@@ -2,6 +2,8 @@
 
 ![LEAM Logo](assets/brand/leam-logo.png)
 
+[中文文档](README.zh-CN.md)
+
 LEAM (LLM-Enabled Antenna Modeling) is a headless Python backend for OpenClaw. It turns structured antenna-design requests into deterministic CST Studio Suite artifacts: model files, simulation exports, optimizer runs, and parameter-update records.
 
 OpenClaw owns the conversation, intent routing, user confirmation, S-parameter analysis, plotting, and design decisions. LEAM owns repeatable execution.
