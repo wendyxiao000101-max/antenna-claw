@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -24,6 +25,23 @@ def _load_json(path: Path) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("PaperReplicationSpec must be a JSON object.")
     return payload
+
+
+def _prime_leam_environment(project_root: Path) -> None:
+    """Expose project-local config values to LEAM when OpenClaw uses another cwd."""
+    config_path = project_root / "config.json"
+    if not config_path.exists():
+        return
+    try:
+        config = _load_json(config_path)
+    except Exception:
+        return
+    api_key = config.get("openai_api_key")
+    cst_path = config.get("cst_path")
+    if api_key and not os.environ.get("LEAM_OPENAI_API_KEY"):
+        os.environ["LEAM_OPENAI_API_KEY"] = str(api_key)
+    if cst_path and not os.environ.get("CST_PATH"):
+        os.environ["CST_PATH"] = str(cst_path)
 
 
 def _slug(text: str, fallback: str = "paper_replication") -> str:
@@ -212,6 +230,7 @@ def run_leam(
     output_name: Optional[str],
     enable_topology_check: bool,
 ) -> Dict[str, Any]:
+    _prime_leam_environment(project_root)
     sys.path.insert(0, str(project_root))
     from leam import BuildAndSimulateRequest, LeamService
 
